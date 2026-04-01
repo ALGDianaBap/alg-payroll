@@ -1414,7 +1414,7 @@ async function renderOpsView() {
 // ══════════════════════════════════════════
 async function renderAdminSettings() {
   let slackToken = "";
-  try { const s = await db.collection("settings").doc("slack").get(); if (s.exists) slackToken = s.data().botToken||""; } catch(e){}
+  try { const s = await db.collection("settings").doc("slack").get(); if (s.exists) slackToken = s.data().webhookUrl||""; } catch(e){}
 
   const rules = `rules_version = '2';
 service cloud.firestore {
@@ -1453,17 +1453,16 @@ service cloud.firestore {
       <div class="card mb-6">
         <div class="card-header"><div class="card-title">🔔 Slack Integration</div></div>
         <div class="card-body">
-          <p class="text-muted mb-4">The Slack Bot Token is stored as a <strong>Netlify Environment Variable</strong> (more secure than Firestore). Set it once in Netlify → Site Settings → Environment Variables as <code style="background:var(--paper);padding:2px 6px;border-radius:4px">SLACK_BOT_TOKEN</code>.</p>
-          <div style="background:var(--green-light);border:1px solid #b8dfc9;border-radius:var(--radius-sm);padding:13px 15px;font-size:13px;color:var(--green);margin-bottom:14px">
-            ✅ Slack notifications now route through a secure server-side proxy — no CORS issues.
-          </div>
-          <div style="font-size:13px;color:var(--ink-soft);line-height:1.8">
-            <strong>Steps:</strong><br>
-            1. Go to <strong>Netlify → your site → Site settings → Environment variables</strong><br>
-            2. Click <strong>Add a variable</strong><br>
-            3. Key: <code style="background:var(--paper);padding:1px 5px;border-radius:3px">SLACK_BOT_TOKEN</code><br>
-            4. Value: your <code style="background:var(--paper);padding:1px 5px;border-radius:3px">xoxb-...</code> token<br>
-            5. Click Save → then <strong>Trigger deploy</strong>
+          <p class="text-muted mb-4">Use a Slack <strong>Incoming Webhook URL</strong> for notifications — no server needed, no CORS issues. This only posts to <strong>#staff-invoices</strong>.</p>
+          <div class="form-group"><label>Slack Webhook URL</label><input type="password" id="slack-tok" value="${slackToken}" placeholder="https://hooks.slack.com/services/..."></div>
+          <button class="btn btn-primary" onclick="saveSlackToken()">Save Webhook URL</button>
+          <div style="margin-top:14px;font-size:13px;color:var(--ink-soft);line-height:1.8;background:var(--paper);border-radius:var(--radius-sm);padding:12px 14px">
+            <strong>How to get your Webhook URL:</strong><br>
+            1. Go to <a href="https://api.slack.com/apps" target="_blank" style="color:var(--gold)">api.slack.com/apps</a> → click <strong>ALG Payroll Bot</strong><br>
+            2. Left sidebar → <strong>Incoming Webhooks</strong> → toggle <strong>On</strong><br>
+            3. Click <strong>Add New Webhook to Workspace</strong><br>
+            4. Select channel <strong>#staff-invoices</strong> → Allow<br>
+            5. Copy the <code style="background:var(--paper-warm);padding:1px 5px;border-radius:3px">https://hooks.slack.com/services/...</code> URL and paste above
           </div>
         </div>
       </div>
@@ -1494,9 +1493,9 @@ service cloud.firestore {
   `);
 
   window.saveSlackToken = async () => {
-    const tok = document.getElementById("slack-tok").value.trim();
-    await db.collection("settings").doc("slack").set({ botToken: tok }, { merge: true });
-    toast("Slack token saved securely!", "success");
+    const url = document.getElementById("slack-tok").value.trim();
+    await db.collection("settings").doc("slack").set({ webhookUrl: url }, { merge: true });
+    toast("Webhook URL saved!", "success");
   };
   window.copyRules = () => {
     navigator.clipboard.writeText(document.getElementById("rules-block").textContent)
@@ -1639,29 +1638,40 @@ function closeModal() { document.getElementById("modal-area").innerHTML = ""; }
 // ══════════════════════════════════════════
 // SLACK
 // ══════════════════════════════════════════
-// Slack calls go through Netlify serverless proxy to avoid CORS
-async function sendSlack(channel, text) {
+// Slack via Incoming Webhook (no CORS issues) + Firestore queue for DMs
+async function getWebhookUrl() {
   try {
-    const res = await fetch("/.netlify/functions/slack-proxy", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ channel, text })
-    });
-    const json = await res.json();
-    if (!json.ok) console.warn("Slack error:", json.error, "| channel:", channel);
-    else console.log("Slack sent OK to", channel);
-  } catch(e) { console.warn("Slack proxy error:", e); }
+    const s = await db.collection("settings").doc("slack").get();
+    return s.exists ? s.data().webhookUrl || null : null;
+  } catch(e) { return null; }
 }
+
+async function sendSlack(channel, text) {
+  // Try webhook first (no CORS), fallback to Firestore queue
+  const webhookUrl = await getWebhookUrl();
+  if (webhookUrl) {
+    try {
+      await fetch(webhookUrl, {
+        method: "POST",
+        body: JSON.stringify({ text })
+      });
+      console.log("Slack webhook sent OK");
+      return;
+    } catch(e) { console.warn("Webhook error:", e); }
+  }
+  // Fallback: write to Firestore notifications queue
+  await db.collection("notifications").add({
+    channel, text, createdAt: FS.serverTimestamp(), sent: false
+  });
+  console.log("Notification queued in Firestore");
+}
+
 async function sendSlackDM(userId, text) {
-  try {
-    const res = await fetch("/.netlify/functions/slack-proxy", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ channel: userId, text })
-    });
-    const json = await res.json();
-    if (!json.ok) console.warn("Slack DM error:", json.error);
-  } catch(e) { console.warn("Slack DM proxy error:", e); }
+  // Queue DM in Firestore (processed server-side or manually)
+  await db.collection("notifications").add({
+    channel: userId, text, isDM: true,
+    createdAt: FS.serverTimestamp(), sent: false
+  });
 }
 
 // ══════════════════════════════════════════
