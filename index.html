@@ -1453,9 +1453,18 @@ service cloud.firestore {
       <div class="card mb-6">
         <div class="card-header"><div class="card-title">🔔 Slack Integration</div></div>
         <div class="card-body">
-          <p class="text-muted mb-4">Paste your Slack Bot Token below. It is stored in Firestore and never exposed in the app source code. This powers OTP codes and invoice notifications.</p>
-          <div class="form-group"><label>Slack Bot Token</label><input type="password" id="slack-tok" value="${slackToken}" placeholder="xoxb-..."></div>
-          <button class="btn btn-primary" onclick="saveSlackToken()">Save Token</button>
+          <p class="text-muted mb-4">The Slack Bot Token is stored as a <strong>Netlify Environment Variable</strong> (more secure than Firestore). Set it once in Netlify → Site Settings → Environment Variables as <code style="background:var(--paper);padding:2px 6px;border-radius:4px">SLACK_BOT_TOKEN</code>.</p>
+          <div style="background:var(--green-light);border:1px solid #b8dfc9;border-radius:var(--radius-sm);padding:13px 15px;font-size:13px;color:var(--green);margin-bottom:14px">
+            ✅ Slack notifications now route through a secure server-side proxy — no CORS issues.
+          </div>
+          <div style="font-size:13px;color:var(--ink-soft);line-height:1.8">
+            <strong>Steps:</strong><br>
+            1. Go to <strong>Netlify → your site → Site settings → Environment variables</strong><br>
+            2. Click <strong>Add a variable</strong><br>
+            3. Key: <code style="background:var(--paper);padding:1px 5px;border-radius:3px">SLACK_BOT_TOKEN</code><br>
+            4. Value: your <code style="background:var(--paper);padding:1px 5px;border-radius:3px">xoxb-...</code> token<br>
+            5. Click Save → then <strong>Trigger deploy</strong>
+          </div>
         </div>
       </div>
       <div class="card mb-6">
@@ -1630,36 +1639,29 @@ function closeModal() { document.getElementById("modal-area").innerHTML = ""; }
 // ══════════════════════════════════════════
 // SLACK
 // ══════════════════════════════════════════
-async function getSlackToken() {
-  try { const s = await db.collection("settings").doc("slack").get(); return s.exists ? s.data().botToken : null; }
-  catch(e) { return null; }
-}
+// Slack calls go through Netlify serverless proxy to avoid CORS
 async function sendSlack(channel, text) {
-  const tok = await getSlackToken();
-  if (!tok) { console.warn("Slack: no token saved"); return; }
   try {
-    const res = await fetch("https://slack.com/api/chat.postMessage", {
+    const res = await fetch("/.netlify/functions/slack-proxy", {
       method: "POST",
-      headers: { "Content-Type": "application/json;charset=utf-8", "Authorization": "Bearer " + tok },
-      body: JSON.stringify({ channel, text, unfurl_links: false })
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ channel, text })
     });
     const json = await res.json();
     if (!json.ok) console.warn("Slack error:", json.error, "| channel:", channel);
     else console.log("Slack sent OK to", channel);
-  } catch(e) { console.warn("Slack fetch error:", e); }
+  } catch(e) { console.warn("Slack proxy error:", e); }
 }
 async function sendSlackDM(userId, text) {
-  const tok = await getSlackToken();
-  if (!tok) { console.warn("Slack DM: no token"); return; }
   try {
-    const res = await fetch("https://slack.com/api/chat.postMessage", {
+    const res = await fetch("/.netlify/functions/slack-proxy", {
       method: "POST",
-      headers: { "Content-Type": "application/json;charset=utf-8", "Authorization": "Bearer " + tok },
-      body: JSON.stringify({ channel: userId, text, unfurl_links: false })
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ channel: userId, text })
     });
     const json = await res.json();
-    if (!json.ok) console.warn("Slack DM error:", json.error, "| userId:", userId);
-  } catch(e) { console.warn("Slack DM fetch error:", e); }
+    if (!json.ok) console.warn("Slack DM error:", json.error);
+  } catch(e) { console.warn("Slack DM proxy error:", e); }
 }
 
 // ══════════════════════════════════════════
